@@ -1,1 +1,39 @@
-node_modules/\ndist/\n__pycache__/\n*.pyc\n.venv/\n.env\n*.sqlite\n.DS_Store\n
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# React / Vite
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pickle models
+*.pkl
+
+# Environment
+.env
+.env.local
+.env.production

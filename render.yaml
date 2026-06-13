@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: p4-satisfacao-backend
+    env: docker
+    repo: https://github.com/maitemeissner/p4-satisfacao-multilingue
+    dockerfilePath: backend/Dockerfile
+    plan: free
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: NEON_HOST
+        sync: false
+      - key: NEON_DATABASE
+        sync: false
+      - key: NEON_USER
+        sync: false
+      - key: NEON_PASSWORD
+        sync: false
+
+  - type: web
+    name: p4-satisfacao-frontend
+    env: static
+    repo: https://github.com/maitemeissner/p4-satisfacao-multilingue
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        value: https://p4-satisfacao-backend.onrender.com
+
+  - type: web
+    name: p4-mcp-server
+    env: node
+    repo: https://github.com/maitemeissner/p4-satisfacao-multilingue
+    buildCommand: cd mcp-server && npm install && npm run build
+    startCommand: cd mcp-server && npm start
+    plan: free
+    envVars:
+      - key: FLASK_URL
+        value: https://p4-satisfacao-backend.onrender.com

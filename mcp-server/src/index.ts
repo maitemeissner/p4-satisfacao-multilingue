@@ -1,11 +1,47 @@
-import express from "express";
-const app = express();
-app.use(express.json());
-const PORT = parseInt(process.env.PORT || "3001");
-app.get("/health", (_r, res) => res.json({ status: "ok" }));
-app.post("/mcp/analisar", (req, res) => {
-  const { texto, idioma } = req.body;
-  const score = Math.min(5, Math.max(1, Math.random() * 5));
-  res.json({ score: score.toFixed(2), idioma, sentimento: score >= 4 ? "positivo" : score >= 3 ? "neutro" : "negativo" });
-});
-app.listen(PORT, () => console.log(`MCP Satisfacao running on ${PORT}`));
+import express from "express"
+import axios from "axios"
+
+const app = express()
+const PORT = process.env.PORT || 3001
+const FLASK_URL = process.env.FLASK_URL || "http://localhost:5000"
+
+app.use(express.json())
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", server: "p4-mcp-server" })
+})
+
+app.get("/api/predictions", async (_req, res) => {
+  try {
+    const resp = await axios.get(`${FLASK_URL}/stats`)
+    res.json(resp.data)
+  } catch {
+    res.status(502).json({ erro: "Falha ao conectar com backend Flask" })
+  }
+})
+
+app.post("/api/predict", async (req, res) => {
+  try {
+    const { texto } = req.body
+    if (!texto) {
+      return res.status(400).json({ erro: "Campo 'texto' é obrigatório" })
+    }
+    const resp = await axios.post(`${FLASK_URL}/prever`, { texto })
+    res.json(resp.data)
+  } catch {
+    res.status(502).json({ erro: "Falha ao conectar com backend Flask" })
+  }
+})
+
+app.get("/api/stats", async (_req, res) => {
+  try {
+    const resp = await axios.get(`${FLASK_URL}/relatorio-lgpd`)
+    res.json(resp.data)
+  } catch {
+    res.status(502).json({ erro: "Falha ao conectar com backend Flask" })
+  }
+})
+
+app.listen(PORT, () => {
+  console.log(`MCP Server rodando na porta ${PORT}`)
+})

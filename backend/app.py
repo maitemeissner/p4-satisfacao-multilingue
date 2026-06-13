@@ -1,54 +1,86 @@
+import os
+import csv
+import io
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import os
-from datetime import datetime
+from nlp.modelo import ModeloPreditor
+from lgpd.anonymizer import Anonymizer
 
 app = Flask(__name__)
 CORS(app)
 
-DB_PATH = "data/database.sqlite"
+modelo = ModeloPreditor()
+anonymizer = Anonymizer()
 
-def get_db():
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok", "service": "satisfacao-multilingue"})
+reviews_db: list[dict] = []
 
 @app.route("/prever", methods=["POST"])
 def prever():
-    data = request.json
-    texto = data.get("texto", "")
-    idioma = data.get("idioma", "pt-BR")
+    data = request.get_json()
+    if not data or "texto" not in data:
+        return jsonify({"erro": "Campo 'texto' é obrigatório"}), 400
+    texto = data["texto"]
+    score, classe, confianca = modelo.prever(texto)
+    return jsonify({"score": score, "classe": classe, "confianca": confianca})
 
-    try:
-        from nlp.modelo import predict_score
-        score = predict_score(texto, idioma)
-        return jsonify({"score": score, "idioma": idioma, "sentimento": "positivo" if score >= 4 else "neutro" if score >= 3 else "negativo"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/stats")
+@app.route("/stats", methods=["GET"])
 def stats():
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT idioma, AVG(score) as avg_score, COUNT(*) as total FROM reviews GROUP BY idioma"
-    ).fetchall()
-    conn.close()
-    return jsonify({"stats": [dict(r) for r in rows]})
-
-@app.route("/relatorio-lgpd")
-def relatorio_lgpd():
+    if not reviews_db:
+        return jsonify({
+            "media_por_idioma": {},
+            "media_por_plataforma": {},
+            "media_por_periodo": {},
+            "total_reviews": 0
+        })
+    idiomas: dict[str, list[float]] = {}
+    plataformas: dict[str, list[float]] = {}
+    periodos: dict[str, list[float]] = {}
+    for r in reviews_db:
+        idiomas.setdefault(r["idioma"], []).append(r["score"])
+        plataformas.setdefault(r["plataforma"], []).append(r["score"])
+        if "data" in r and r["data"]:
+            try:
+                mes = datetime.strptime(r["data"], "%Y-%m-%d").strftime("%Y-%m")
+                periodos.setdefault(mes, []).append(r["score"])
+            except ValueError:
+                pass
     return jsonify({
-        "dados_anonimizados": True,
-        "campos_ofuscados": ["nome_reviewer", "email", "ip_address"],
-        "base_legal": "LGPD Art. 7",
-        "data_geracao": datetime.now().isoformat()
+        "media_por_idioma": {k: sum(v) / len(v) for k, v in idiomas.items()},
+        "media_por_plataforma": {k: sum(v) / len(v) for k, v in plataformas.items()},
+        "media_por_periodo": {k: sum(v) / len(v) for k, v in periodos.items()},
+        "total_reviews": len(reviews_db)
     })
 
+@app.route("/upload-csv", methods=["POST"])
+def upload_csv():
+    if "file" not in request.files:
+        return jsonify({"erro": "Nenhum arquivo enviado"}), 400
+    file = request.files["file"]
+    content = file.read().decode("utf-8")
+    reader = csv.DictReader(io.StringIO(content))
+    count = 0
+    for row in reader:
+        texto = row.get("texto", "")
+        score = float(row.get("score", 3))
+        idioma = row.get("idioma", "pt")
+        plataforma = row.get("plataforma", "desconhecida")
+        data = row.get("data", datetime.now().strftime("%Y-%m-%d"))
+        texto_anonimizado = anonymizer.anonymize(texto)
+        reviews_db.append({
+            "id": len(reviews_db) + 1,
+            "texto_anonimizado": texto_anonimizado,
+            "score": score,
+            "idioma": idioma,
+            "plataforma": plataforma,
+            "data": data,
+        })
+        count += 1
+    return jsonify({"message": f"{count} reviews importadas com sucesso", "total": count})
+
+@app.route("/relatorio-lgpd", methods=["GET"])
+def relatorio_lgpd():
+    return jsonify({"reviews": reviews_db})
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
