@@ -1,6 +1,8 @@
 import os
 import csv
 import io
+import psycopg2
+import psycopg2.extras
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -13,7 +15,37 @@ CORS(app)
 modelo = ModeloPreditor()
 anonymizer = Anonymizer()
 
-reviews_db: list[dict] = []
+def get_db():
+    return psycopg2.connect(
+        host=os.environ.get('NEON_HOST'),
+        dbname=os.environ.get('NEON_DATABASE', 'neondb'),
+        user=os.environ.get('NEON_USER'),
+        password=os.environ.get('NEON_PASSWORD'),
+        sslmode='require'
+    )
+
+def init_db():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS reviews (
+                id SERIAL PRIMARY KEY,
+                texto_anonimizado TEXT,
+                score REAL,
+                idioma VARCHAR(10),
+                plataforma VARCHAR(50),
+                data DATE DEFAULT CURRENT_DATE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"DB init warning: {e}")
+
+init_db()
 
 @app.route("/prever", methods=["POST"])
 def prever():
@@ -26,31 +58,24 @@ def prever():
 
 @app.route("/stats", methods=["GET"])
 def stats():
-    if not reviews_db:
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT COUNT(*) as total FROM reviews")
+        total = cur.fetchone()["total"]
+        cur.execute("SELECT idioma, AVG(score) as media FROM reviews GROUP BY idioma")
+        por_idioma = {r["idioma"]: float(r["media"]) for r in cur.fetchall()}
+        cur.execute("SELECT plataforma, AVG(score) as media FROM reviews GROUP BY plataforma")
+        por_plataforma = {r["plataforma"]: float(r["media"]) for r in cur.fetchall()}
+        cur.close()
+        conn.close()
         return jsonify({
-            "media_por_idioma": {},
-            "media_por_plataforma": {},
-            "media_por_periodo": {},
-            "total_reviews": 0
+            "media_por_idioma": por_idioma,
+            "media_por_plataforma": por_plataforma,
+            "total_reviews": total
         })
-    idiomas: dict[str, list[float]] = {}
-    plataformas: dict[str, list[float]] = {}
-    periodos: dict[str, list[float]] = {}
-    for r in reviews_db:
-        idiomas.setdefault(r["idioma"], []).append(r["score"])
-        plataformas.setdefault(r["plataforma"], []).append(r["score"])
-        if "data" in r and r["data"]:
-            try:
-                mes = datetime.strptime(r["data"], "%Y-%m-%d").strftime("%Y-%m")
-                periodos.setdefault(mes, []).append(r["score"])
-            except ValueError:
-                pass
-    return jsonify({
-        "media_por_idioma": {k: sum(v) / len(v) for k, v in idiomas.items()},
-        "media_por_plataforma": {k: sum(v) / len(v) for k, v in plataformas.items()},
-        "media_por_periodo": {k: sum(v) / len(v) for k, v in periodos.items()},
-        "total_reviews": len(reviews_db)
-    })
+    except Exception as e:
+        return jsonify({"erro": str(e), "total_reviews": 0}), 500
 
 @app.route("/upload-csv", methods=["POST"])
 def upload_csv():
@@ -60,6 +85,8 @@ def upload_csv():
     content = file.read().decode("utf-8")
     reader = csv.DictReader(io.StringIO(content))
     count = 0
+    conn = get_db()
+    cur = conn.cursor()
     for row in reader:
         texto = row.get("texto", "")
         score = float(row.get("score", 3))
@@ -67,20 +94,31 @@ def upload_csv():
         plataforma = row.get("plataforma", "desconhecida")
         data = row.get("data", datetime.now().strftime("%Y-%m-%d"))
         texto_anonimizado = anonymizer.anonymize(texto)
-        reviews_db.append({
-            "id": len(reviews_db) + 1,
-            "texto_anonimizado": texto_anonimizado,
-            "score": score,
-            "idioma": idioma,
-            "plataforma": plataforma,
-            "data": data,
-        })
+        cur.execute(
+            "INSERT INTO reviews (texto_anonimizado, score, idioma, plataforma, data) VALUES (%s, %s, %s, %s, %s)",
+            (texto_anonimizado, score, idioma, plataforma, data)
+        )
         count += 1
+    conn.commit()
+    cur.close()
+    conn.close()
     return jsonify({"message": f"{count} reviews importadas com sucesso", "total": count})
 
 @app.route("/relatorio-lgpd", methods=["GET"])
 def relatorio_lgpd():
-    return jsonify({"reviews": reviews_db})
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM reviews ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({"reviews": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"erro": str(e), "reviews": []}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+if __name__ != "__main__":
+    gunicorn_app = app
+else:
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
